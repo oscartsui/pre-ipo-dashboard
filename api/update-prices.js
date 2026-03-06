@@ -2,6 +2,7 @@
 // 从 Jupiter API 获取最新价格，计算 implied valuation，更新 Supabase
 
 export default async function handler(req, res) {
+  // Vercel Serverless Function
   // 验证请求（防止被随意调用）
   const authHeader = req.headers.authorization;
   const cronSecret = process.env.CRON_SECRET;
