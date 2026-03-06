@@ -1,0 +1,17 @@
+name: Update Token Prices
+
+on:
+  schedule:
+    # 每15分钟运行一次
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # 支持手动触发
+
+jobs:
+  update-prices:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call price update API
+        run: |
+          curl -s -X GET "https://petoken.co/api/update-prices" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            | jq '.'
