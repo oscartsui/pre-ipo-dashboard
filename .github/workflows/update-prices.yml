@@ -10,8 +10,95 @@ jobs:
   update-prices:
     runs-on: ubuntu-latest
     steps:
-      - name: Call price update API
+      - name: Update prices from Jupiter API
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          curl -s -X GET "https://petoken.co/api/update-prices" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            | jq '.'
+          NOW_MS=$(date +%s)000
+          
+          # 获取所有有 price_api_url 的 Token
+          TOKENS=$(curl -s "${SUPABASE_URL}/rest/v1/tokens?price_api_url=not.is.null&select=id,token_name,price_api_url,valuation_multiplier" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}")
+          
+          echo "Tokens to update:"
+          echo "$TOKENS" | jq '.'
+          
+          # 遍历每个 Token 更新价格
+          echo "$TOKENS" | jq -c '.[]' | while read -r token; do
+            TOKEN_ID=$(echo "$token" | jq -r '.id')
+            TOKEN_NAME=$(echo "$token" | jq -r '.token_name')
+            API_URL=$(echo "$token" | jq -r '.price_api_url' | sed "s/{NOW}/${NOW_MS}/g")
+            MULTIPLIER=$(echo "$token" | jq -r '.valuation_multiplier // empty')
+            
+            echo "Updating ${TOKEN_NAME} (id=${TOKEN_ID})..."
+            
+            # 获取价格
+            PRICE_DATA=$(curl -s "$API_URL")
+            
+            if [ -z "$PRICE_DATA" ] || echo "$PRICE_DATA" | jq -e '.status' > /dev/null 2>&1; then
+              echo "  ERROR: Failed to fetch price"
+              continue
+            fi
+            
+            LATEST_CLOSE=$(echo "$PRICE_DATA" | jq -r '.candles[-1].close // empty')
+            PREV_CLOSE=$(echo "$PRICE_DATA" | jq -r '.candles[-2].close // empty')
+            
+            if [ -z "$LATEST_CLOSE" ]; then
+              echo "  ERROR: Could not parse price"
+              continue
+            fi
+            
+            # 格式化价格
+            NEW_PRICE="\$$(printf '%.2f' "$LATEST_CLOSE")"
+            
+            # 计算涨跌幅
+            TREND_STR="+0.0%"
+            if [ -n "$PREV_CLOSE" ] && [ "$PREV_CLOSE" != "0" ]; then
+              TREND=$(echo "scale=2; ($LATEST_CLOSE - $PREV_CLOSE) / $PREV_CLOSE * 100" | bc)
+              if [ -n "$TREND" ]; then
+                if echo "$TREND" | grep -q "^-"; then
+                  TREND_STR="${TREND}%"
+                else
+                  TREND_STR="+${TREND}%"
+                fi
+              fi
+            fi
+            
+            # 计算 implied valuation
+            VALUATION_STR=""
+            if [ -n "$MULTIPLIER" ] && [ "$MULTIPLIER" != "null" ]; then
+              VALUATION=$(echo "$LATEST_CLOSE * $MULTIPLIER" | bc)
+              if [ -n "$VALUATION" ]; then
+                IS_TRILLION=$(echo "$VALUATION >= 1000000000000" | bc)
+                if [ "$IS_TRILLION" = "1" ]; then
+                  VAL_T=$(echo "scale=2; $VALUATION / 1000000000000" | bc)
+                  VALUATION_STR="\$${VAL_T}T"
+                else
+                  VAL_B=$(echo "scale=2; $VALUATION / 1000000000" | bc)
+                  VALUATION_STR="\$${VAL_B}B"
+                fi
+              fi
+            fi
+            
+            echo "  Price: ${NEW_PRICE} (${TREND_STR})"
+            [ -n "$VALUATION_STR" ] && echo "  Valuation: ${VALUATION_STR}"
+            
+            # 更新数据库
+            UPDATE_JSON="{\"price\": \"${NEW_PRICE}\", \"trend\": \"${TREND_STR}\", \"price_updated_at\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\""
+            if [ -n "$VALUATION_STR" ]; then
+              UPDATE_JSON="${UPDATE_JSON}, \"implied_valuation\": \"${VALUATION_STR}\""
+            fi
+            UPDATE_JSON="${UPDATE_JSON}}"
+            
+            curl -s -X PATCH "${SUPABASE_URL}/rest/v1/tokens?id=eq.${TOKEN_ID}" \
+              -H "apikey: ${SUPABASE_KEY}" \
+              -H "Authorization: Bearer ${SUPABASE_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "$UPDATE_JSON" > /dev/null
+            
+            echo "  Updated!"
+          done
+          
+          echo "Price update complete!"
