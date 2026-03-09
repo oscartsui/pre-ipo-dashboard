@@ -15,7 +15,7 @@ jobs:
 
       - name: Update prices from Jupiter API
         env:
-          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_URL: "https://zvdmtgmkddivkouumulx.supabase.co"
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           NOW_MS=$(date +%s)000
